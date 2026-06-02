@@ -1,38 +1,30 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { createShoppingList } from '../api/recipeApi'
 import BottomNav from '../components/BottomNav'
 import '../global.css'
 
-/**
- * 買い物リストページ
- * - RecipeDetailPage から navigate('/shopping', { state: { recipe, servings } }) で遷移
- * - 各材料に「手元にある量」を入力すると差し引いた購入量を表示
- * - 保存しない（毎回フレッシュスタート）設計
- */
-
 function fmtNum(val) {
-  if (!val || val <= 0) return null
+  if (val === null || val === undefined || val < 0) return null
+  if (val === 0) return '0'
   if (Number.isInteger(val)) return String(val)
   const f = val.toFixed(1)
   return f.endsWith('.0') ? f.slice(0, -2) : f
 }
 
 export default function ShoppingListPage() {
-  const navigate = useNavigate()
-  const { state } = useLocation()
+  const navigate    = useNavigate()
+  const { state }   = useLocation()
+  const recipe      = state?.recipe
+  const servings    = state?.servings
 
-  // RecipeDetailPage から渡ってくる { recipe, servings }
-  const recipe   = state?.recipe
-  const servings = state?.servings
-
-  // 手元の在庫入力（material の name をキーにした map）
   const [pantry,   setPantry]   = useState({})
-  // 購入済みチェック
   const [checked,  setChecked]  = useState(new Set())
-  // 表示モード: 'input'（残量入力）→ 'list'（買い物リスト）
   const [mode,     setMode]     = useState('input')
+  const [saving,   setSaving]   = useState(false)
+  const [savedId,  setSavedId]  = useState(null)
+  const [showToast,setShowToast]= useState(false)
 
-  // ページ遷移前のデータチェック
   if (!recipe || !servings) {
     return (
       <div style={{ display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100vh',gap:12,padding:24 }}>
@@ -44,31 +36,90 @@ export default function ShoppingListPage() {
 
   const ratio = servings / recipe.base_servings
 
-  // 数値換算できる材料（amount が数値のもの）
   const numericItems = recipe.ingredients.filter(ing => !ing.amount_text && ing.amount != null && ing.amount > 0)
-  // テキスト材料（目分量系）
   const textItems    = recipe.ingredients.filter(ing => ing.amount_text || !ing.amount)
 
-  // 差し引き計算
+  // ① バグ修正: rawInput が '' または undefined のときだけ「未入力」として扱う
+  //   0 を入力した場合は 0 として計算する
+  const parseHave = (name) => {
+    const raw = pantry[name]
+    if (raw === undefined || raw === '') return null  // 未入力
+    const n = parseFloat(raw)
+    return isNaN(n) ? null : n
+  }
+
   const calcNeeded = (ing) => {
     const required = (ing.amount || 0) * ratio
-    const have     = parseFloat(pantry[ing.name] || 0) || 0
+    const have     = parseHave(ing.name)
+    if (have === null) return required          // 未入力 → 全量
     return Math.max(0, required - have)
   }
 
-  // 合計金額（未実装・将来用）
   const listItems = numericItems.map(ing => ({
     ...ing,
     required: (ing.amount || 0) * ratio,
-    have:     parseFloat(pantry[ing.name] || 0) || 0,
+    have:     parseHave(ing.name),
     needed:   calcNeeded(ing),
   }))
 
   const allDone = listItems.filter(i => i.needed > 0).every(i => checked.has(i.name))
     && textItems.every(i => checked.has(i.name))
 
+  // 買い物リストを保存
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const items = [
+        // 数値材料
+        ...listItems.map(item => ({
+          name:     item.name,
+          needed:   item.needed,
+          unit:     item.unit,
+          is_text:  false,
+          text_val: null,
+          checked:  checked.has(item.name),
+        })),
+        // テキスト材料
+        ...textItems.map(ing => ({
+          name:     ing.name,
+          needed:   null,
+          unit:     '',
+          is_text:  true,
+          text_val: ing.amount_text || '適量',
+          checked:  checked.has(ing.name),
+        })),
+      ]
+      const saved = await createShoppingList({
+        recipe_id:    recipe.id,
+        recipe_title: recipe.title,
+        servings,
+        items,
+      })
+      setSavedId(saved.id)
+      setShowToast(true)
+      setTimeout(() => setShowToast(false), 3000)
+    } catch (e) {
+      alert('保存に失敗しました。バックエンドが起動しているか確認してください。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="page-wrapper">
+
+      {/* トースト通知 */}
+      {showToast && (
+        <div style={{
+          position:'fixed',top:16,left:'50%',transform:'translateX(-50%)',
+          background:'#3B6D11',color:'#fff',
+          padding:'10px 20px',borderRadius:999,
+          fontSize:13,fontWeight:600,zIndex:999,
+          boxShadow:'0 4px 16px rgba(0,0,0,.2)',
+        }}>
+          ✓ 買い物リストを保存しました
+        </div>
+      )}
 
       {/* ヘッダー */}
       <div className="topbar">
@@ -79,8 +130,7 @@ export default function ShoppingListPage() {
             color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',
           }}>← 戻る</button>
           <span className="topbar-title" style={{ flex:1,textAlign:'center' }}>買い物リスト</span>
-          {/* モード切替 */}
-          <button onClick={() => setMode(m => m==='input' ? 'list' : 'input')} style={{
+          <button onClick={() => setMode(m => m==='input'?'list':'input')} style={{
             background:'rgba(255,255,255,.2)',border:'1px solid rgba(255,255,255,.4)',
             borderRadius:'var(--radius-sm)',padding:'6px 10px',
             color:'#fff',fontSize:12,fontWeight:600,cursor:'pointer',
@@ -108,17 +158,16 @@ export default function ShoppingListPage() {
 
       {/* ── 残量入力モード ── */}
       {mode === 'input' && (
-        <div style={{ padding:'16px 16px' }}>
+        <div style={{ padding:'16px' }}>
           <div style={{
             background:'var(--blue-light)',border:'1px solid var(--blue-100)',
             borderRadius:'var(--radius-sm)',padding:'10px 14px',
             fontSize:13,color:'var(--blue)',marginBottom:16,lineHeight:1.6,
           }}>
-            💡 冷蔵庫に残っている分を入力すると、必要な購入量から差し引きます。<br />
+            💡 冷蔵庫に残っている分を入力すると必要な購入量から差し引きます。<br />
             <strong>空欄のままでもOK</strong>（その場合は全量を購入リストに追加します）
           </div>
 
-          {/* 数値材料 */}
           {numericItems.length > 0 && (
             <>
               <div style={{ fontSize:12,fontWeight:600,color:'var(--text-3)',marginBottom:8 }}>
@@ -126,8 +175,8 @@ export default function ShoppingListPage() {
               </div>
               {numericItems.map((ing, i) => {
                 const required = (ing.amount || 0) * ratio
-                const have     = parseFloat(pantry[ing.name] || 0) || 0
-                const needed   = Math.max(0, required - have)
+                const have     = parseHave(ing.name)
+                const needed   = have === null ? required : Math.max(0, required - have)
                 return (
                   <div key={i} style={{
                     background:'var(--surface)',border:'1px solid var(--border)',
@@ -142,11 +191,8 @@ export default function ShoppingListPage() {
                     <div style={{ display:'flex',alignItems:'center',gap:8 }}>
                       <span style={{ fontSize:12,color:'var(--text-3)',width:80,flexShrink:0 }}>手元にある:</span>
                       <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        placeholder="0"
-                        value={pantry[ing.name] || ''}
+                        type="number" min="0" step="0.1" placeholder="未入力"
+                        value={pantry[ing.name] ?? ''}
                         onChange={e => setPantry(p => ({ ...p, [ing.name]: e.target.value }))}
                         style={{
                           width:80,padding:'6px 8px',
@@ -157,8 +203,8 @@ export default function ShoppingListPage() {
                         onBlur={e  => e.target.style.borderColor='var(--border)'}
                       />
                       <span style={{ fontSize:13,color:'var(--text-2)' }}>{ing.unit}</span>
-                      {/* プレビュー */}
-                      {have > 0 && (
+                      {/* ① 修正: have が null（未入力）でない場合のみプレビュー表示 */}
+                      {have !== null && (
                         <span style={{
                           marginLeft:'auto',fontSize:13,fontWeight:600,
                           color: needed === 0 ? '#3B6D11' : 'var(--blue)',
@@ -173,7 +219,6 @@ export default function ShoppingListPage() {
             </>
           )}
 
-          {/* テキスト材料 */}
           {textItems.length > 0 && (
             <>
               <div style={{ fontSize:12,fontWeight:600,color:'var(--text-3)',marginTop:16,marginBottom:8 }}>
@@ -184,8 +229,7 @@ export default function ShoppingListPage() {
                   display:'flex',justifyContent:'space-between',alignItems:'center',
                   padding:'10px 12px',
                   background:'var(--bg)',border:'1px solid var(--border)',
-                  borderRadius:'var(--radius-sm)',marginBottom:6,
-                  fontSize:14,
+                  borderRadius:'var(--radius-sm)',marginBottom:6,fontSize:14,
                 }}>
                   <span>{ing.name}</span>
                   <span style={{ color:'var(--text-3)',fontSize:13 }}>
@@ -208,7 +252,7 @@ export default function ShoppingListPage() {
 
       {/* ── 買い物リストモード ── */}
       {mode === 'list' && (
-        <div style={{ padding:'16px 16px' }}>
+        <div style={{ padding:'16px' }}>
 
           {allDone && (
             <div style={{
@@ -228,39 +272,34 @@ export default function ShoppingListPage() {
                 購入が必要な材料
               </div>
               {listItems.filter(i => i.needed > 0).map((item, i) => (
-                <div
-                  key={i}
+                <div key={i}
                   onClick={() => setChecked(prev => {
-                    const n = new Set(prev); n.has(item.name) ? n.delete(item.name) : n.add(item.name); return n
+                    const n = new Set(prev); n.has(item.name)?n.delete(item.name):n.add(item.name); return n
                   })}
                   style={{
                     display:'flex',alignItems:'center',gap:12,
                     padding:'12px 14px',
-                    background: checked.has(item.name) ? 'var(--bg)' : 'var(--surface)',
+                    background:checked.has(item.name)?'var(--bg)':'var(--surface)',
                     border:'1px solid var(--border)',
                     borderRadius:'var(--radius-sm)',marginBottom:6,
-                    cursor:'pointer',opacity: checked.has(item.name) ? .55 : 1,
+                    cursor:'pointer',opacity:checked.has(item.name)?.55:1,
                     transition:'all var(--t)',
                   }}
                 >
                   <div style={{
                     width:22,height:22,borderRadius:4,flexShrink:0,
-                    border: checked.has(item.name) ? 'none' : '2px solid var(--border)',
-                    background: checked.has(item.name) ? '#3B6D11' : 'transparent',
+                    border:checked.has(item.name)?'none':'2px solid var(--border)',
+                    background:checked.has(item.name)?'#3B6D11':'transparent',
                     display:'flex',alignItems:'center',justifyContent:'center',
                   }}>
                     {checked.has(item.name) && <span style={{ color:'#fff',fontSize:14 }}>✓</span>}
                   </div>
-                  <span style={{
-                    flex:1,fontSize:14,
-                    textDecoration: checked.has(item.name) ? 'line-through' : 'none',
-                  }}>{item.name}</span>
-                  <span style={{
-                    fontSize:14,fontWeight:600,
-                    color: checked.has(item.name) ? 'var(--text-3)' : 'var(--blue)',
-                  }}>
+                  <span style={{ flex:1,fontSize:14,textDecoration:checked.has(item.name)?'line-through':'none' }}>
+                    {item.name}
+                  </span>
+                  <span style={{ fontSize:14,fontWeight:600,color:checked.has(item.name)?'var(--text-3)':'var(--blue)' }}>
                     {fmtNum(item.needed)} {item.unit}
-                    {item.have > 0 && (
+                    {item.have !== null && item.have > 0 && (
                       <span style={{ fontSize:11,color:'var(--text-3)',marginLeft:4 }}>
                         （{fmtNum(item.required)}-{fmtNum(item.have)}）
                       </span>
@@ -272,12 +311,12 @@ export default function ShoppingListPage() {
           )}
 
           {/* 足りている材料 */}
-          {listItems.filter(i => i.needed === 0 && i.have > 0).length > 0 && (
+          {listItems.filter(i => i.needed === 0 && i.have !== null).length > 0 && (
             <>
               <div style={{ fontSize:12,fontWeight:600,color:'#3B6D11',marginTop:14,marginBottom:8 }}>
                 ✓ 手元にある材料（購入不要）
               </div>
-              {listItems.filter(i => i.needed === 0 && i.have > 0).map((item, i) => (
+              {listItems.filter(i => i.needed === 0 && i.have !== null).map((item, i) => (
                 <div key={i} style={{
                   display:'flex',justifyContent:'space-between',alignItems:'center',
                   padding:'10px 14px',background:'#EAF3DE',
@@ -298,32 +337,31 @@ export default function ShoppingListPage() {
                 目分量で確認してください
               </div>
               {textItems.map((ing, i) => (
-                <div
-                  key={i}
+                <div key={i}
                   onClick={() => setChecked(prev => {
-                    const n = new Set(prev); n.has(ing.name) ? n.delete(ing.name) : n.add(ing.name); return n
+                    const n = new Set(prev); n.has(ing.name)?n.delete(ing.name):n.add(ing.name); return n
                   })}
                   style={{
                     display:'flex',alignItems:'center',gap:12,
                     padding:'10px 14px',
-                    background: checked.has(ing.name) ? 'var(--bg)' : 'var(--surface)',
+                    background:checked.has(ing.name)?'var(--bg)':'var(--surface)',
                     border:'1px solid var(--border)',
                     borderRadius:'var(--radius-sm)',marginBottom:6,
-                    cursor:'pointer',opacity: checked.has(ing.name) ? .55 : 1,
+                    cursor:'pointer',opacity:checked.has(ing.name)?.55:1,
                   }}
                 >
                   <div style={{
                     width:22,height:22,borderRadius:4,flexShrink:0,
-                    border: checked.has(ing.name) ? 'none' : '2px solid var(--border)',
-                    background: checked.has(ing.name) ? '#3B6D11' : 'transparent',
+                    border:checked.has(ing.name)?'none':'2px solid var(--border)',
+                    background:checked.has(ing.name)?'#3B6D11':'transparent',
                     display:'flex',alignItems:'center',justifyContent:'center',
                   }}>
                     {checked.has(ing.name) && <span style={{ color:'#fff',fontSize:14 }}>✓</span>}
                   </div>
                   <span style={{
                     flex:1,fontSize:14,
-                    textDecoration: checked.has(ing.name) ? 'line-through' : 'none',
-                    color: checked.has(ing.name) ? 'var(--text-3)' : 'var(--text-1)',
+                    textDecoration:checked.has(ing.name)?'line-through':'none',
+                    color:checked.has(ing.name)?'var(--text-3)':'var(--text-1)',
                   }}>{ing.name}</span>
                   <span style={{ fontSize:13,color:'var(--text-3)' }}>
                     {ing.amount_text || '適量'}
@@ -333,13 +371,39 @@ export default function ShoppingListPage() {
             </>
           )}
 
-          <button
-            onClick={() => navigate(-1)}
-            className="btn btn-ghost"
-            style={{ width:'100%',justifyContent:'center',padding:'11px 0',marginTop:20 }}
-          >
-            レシピに戻る
-          </button>
+          {/* 保存ボタン */}
+          <div style={{ marginTop:20,display:'flex',flexDirection:'column',gap:8 }}>
+            {!savedId ? (
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                style={{
+                  width:'100%',padding:'13px 0',
+                  background:'#3B6D11',color:'#fff',
+                  border:'none',borderRadius:'var(--radius-sm)',
+                  fontSize:14,fontWeight:600,cursor:saving?'not-allowed':'pointer',
+                  display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+                }}
+              >
+                {saving ? '保存中…' : '💾 この買い物リストを保存する'}
+              </button>
+            ) : (
+              <div style={{
+                background:'#EAF3DE',border:'1px solid #C0DD97',
+                borderRadius:'var(--radius-sm)',padding:'10px 14px',
+                fontSize:13,color:'#3B6D11',textAlign:'center',
+              }}>
+                ✓ 保存済み（ライブラリ → 買い物リストタブで確認できます）
+              </div>
+            )}
+            <button
+              onClick={() => navigate(-1)}
+              className="btn btn-ghost"
+              style={{ width:'100%',justifyContent:'center',padding:'11px 0' }}
+            >
+              レシピに戻る
+            </button>
+          </div>
         </div>
       )}
 

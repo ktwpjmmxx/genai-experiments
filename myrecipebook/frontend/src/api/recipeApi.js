@@ -21,17 +21,25 @@ export const uploadImage = (id, file) => {
   }).then(r => r.data)
 }
 
-// ── Phase 1: AI発見・生成 ─────────────────────
-/**
- * 気分・時間・カテゴリを元に料理候補を取得
- * @param {{ mood?: string, max_time?: number, category?: string }} params
- */
+// ── AI発見・生成 ──────────────────────────────
 export const discoverRecipes = (params = {}) =>
   api.post('/ai/discover', params).then(r => r.data)
 
-/**
- * 料理名からレシピ全文をAIが生成
- * @param {{ title: string, servings: number }} params
- */
 export const generateRecipe = (params) =>
   api.post('/ai/generate-recipe', params).then(r => r.data)
+
+// ── 買い物リスト ──────────────────────────────
+export const fetchShoppingLists = () =>
+  api.get('/shopping-lists').then(r => r.data)
+
+export const fetchShoppingList = (id) =>
+  api.get(`/shopping-lists/${id}`).then(r => r.data)
+
+export const createShoppingList = (data) =>
+  api.post('/shopping-lists', data).then(r => r.data)
+
+export const updateShoppingListItems = (id, items) =>
+  api.patch(`/shopping-lists/${id}/items`, items).then(r => r.data)
+
+export const deleteShoppingList = (id) =>
+  api.delete(`/shopping-lists/${id}`)
